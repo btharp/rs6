@@ -18,120 +18,174 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.svm import SVC
 from sklearn.model_selection import GridSearchCV, cross_val_score, StratifiedKFold, learning_curve
-
-
+sns.set(style='white', context='notebook', palette='deep')
+#%% Load data
 train=pd.read_csv('train.csv')
+test = pd.read_csv("test.csv")
+IDtest = test["PassengerId"]
 
-# %%
-train['Embarked'].fillna(method='ffill',inplace=True)
-train.drop(['Name'],axis = 1,inplace = True)
-train.drop(['Ticket'],axis=1,inplace=True)
-train.drop(['Cabin'],axis=1,inplace=True)
-train['Sex']=pd.factorize(train['Sex'])[0]
-train['Embarked']=pd.factorize(train['Embarked'])[0]
+#%% 
+# Outlier detection 
 
-Diag = sns.PairGrid(train)
-Diag.map(plt.scatter)
-plt.show()
-
-
-#%%
-def Fillme(Value,Male_Avg,Female_Avg):         # Helper Function 
-    Sex = Value[0]        # Value[0] is the sex attribute
-    Age = Value[1]        # Value[1] is the Age attribute
+def detect_outliers(df,n,features):
+    """
+    Takes a dataframe df of features and returns a list of the indices
+    corresponding to the observations containing more than n outliers according
+    to the Tukey method.
+    """
+    outlier_indices = []
     
-    if pd.isnull(Age):
-        if Sex == 0:      # If its Male else Female
-            return Male_Avg
-        else:
-            return Female_Avg
+    # iterate over features(columns)
+    for col in features:
+        # 1st quartile (25%)
+        Q1 = np.percentile(df[col], 25)
+        # 3rd quartile (75%)
+        Q3 = np.percentile(df[col],75)
+        # Interquartile range (IQR)
+        IQR = Q3 - Q1
+        
+        # outlier step
+        outlier_step = 1.5 * IQR
+        
+        # Determine a list of indices of outliers for feature col
+        outlier_list_col = df[(df[col] < Q1 - outlier_step) | (df[col] > Q3 + outlier_step )].index
+        
+        # append the found outlier indices for col to the list of outlier indices 
+        outlier_indices.extend(outlier_list_col)
+        
+    # select observations containing more than 2 outliers
+    outlier_indices = Counter(outlier_indices)        
+    multiple_outliers = list( k for k, v in outlier_indices.items() if v > n )
+    
+    return multiple_outliers   
+
+# detect outliers from Age, SibSp , Parch and Fare
+Outliers_to_drop = detect_outliers(train,2,["Age","SibSp","Parch","Fare"])
+
+train.loc[Outliers_to_drop]
+
+train = train.drop(Outliers_to_drop, axis = 0).reset_index(drop=True)
+
+
+#%% Join train and test set
+train_len = len(train)
+dataset =  pd.concat(objs=[train, test], axis=0).reset_index(drop=True)
+
+
+
+#%% data cleaning
+# Sex dummies
+dataset['Sex']=pd.factorize(dataset['Sex'])[0]
+
+#%% Filling missing value of Age
+# Index of NaN age rows
+dataset=dataset.fillna(np.nan)
+
+index_NaN_age = list(dataset["Age"][dataset["Age"].isnull()].index)
+
+for i in index_NaN_age :
+    age_med = dataset["Age"].median()
+    age_pred = dataset["Age"][((dataset['SibSp'] == dataset.iloc[i]["SibSp"]) & (dataset['Parch'] == dataset.iloc[i]["Parch"]) & (dataset['Pclass'] == dataset.iloc[i]["Pclass"]))].median()
+    if not np.isnan(age_pred) :
+        dataset['Age'].iloc[i] = age_pred
+    else :
+        dataset['Age'].iloc[i] = age_med
+dataset['Age'].fillna(dataset['Age'].median(),inplace=True)
+
+
+
+
+#%% Name
+# Get title from Name
+dataset_title=[i.split(",")[1].split(".")[0].strip() for i in dataset["Name"]]
+dataset["Title"]=pd.Series(dataset_title)
+dataset["Title"].head()
+#%% Convert to catgorial values t   
+dataset["Title"] = dataset["Title"].replace(['Lady', 'the Countess','Countess','Capt', 'Col','Don', 'Dr', 'Major', 'Rev', 'Sir', 'Jonkheer', 'Dona'], 'Rare')
+dataset["Title"] = dataset["Title"].map({"Master":0, "Miss":1, "Ms" : 1 , "Mme":1, "Mlle":1, "Mrs":1, "Mr":2, "Rare":3})
+dataset["Title"] = dataset["Title"].astype(int)
+#%%
+dataset.drop(["Name"],axis=1,inplace=True)
+
+
+# Family Size
+#%%
+dataset["Fsize"]=dataset["SibSp"]+dataset["Parch"]+1
+#%% Create new feature of family size
+dataset['Single'] = dataset['Fsize'].map(lambda s: 1 if s == 1 else 0)
+dataset['SmallF'] = dataset['Fsize'].map(lambda s: 1 if  s == 2  else 0)
+dataset['MedF'] = dataset['Fsize'].map(lambda s: 1 if 3 <= s <= 4 else 0)
+dataset['LargeF'] = dataset['Fsize'].map(lambda s: 1 if s >= 5 else 0)
+
+
+
+#%% convert to indicator values Title and Embarked
+# convert to indicator values Title and Embarked 
+dataset = pd.get_dummies(dataset, columns = ["Title"])
+dataset = pd.get_dummies(dataset, columns = ["Embarked"], prefix="Em")
+
+
+# Cabin
+#%% 
+# Replace the Cabin number by the type of cabin 'X' if not
+dataset["Cabin"] = pd.Series([i[0] if not pd.isnull(i) else 'X' for i in dataset['Cabin'] ])
+dataset = pd.get_dummies(dataset, columns = ["Cabin"],prefix="Cabin")
+
+
+# Pclass
+#%%
+dataset["Pclass"] = dataset["Pclass"].astype("category")
+dataset = pd.get_dummies(dataset, columns = ["Pclass"],prefix="Pc")
+
+
+# Fare
+#%%
+#Fill Fare missing values with the median value
+dataset["Fare"] = dataset["Fare"].fillna(dataset["Fare"].median())
+
+
+# Ticket
+# %%
+Ticket = []
+for i in list(dataset.Ticket):
+    if not i.isdigit() :
+        Ticket.append(i.replace(".","").replace("/","").strip().split(' ')[0]) #Take prefix
     else:
-        return Age
+        Ticket.append("X")
+        
+dataset["Ticket"] = Ticket
 
-#%%
-Male_Avg = np.mean(train[train['Sex'] == 0].Age)               # 0 is male 1 is female by factorize function
-Female_Avg = np.mean(train[train['Sex'] == 1].Age) 
-
-# Now lets fill them 
-train['Age'] = train[['Sex','Age']].apply(lambda x : Fillme(x,Male_Avg,Female_Avg) , axis = 1) 
-
-# %%
-
-#train[train['Sex']=='male']=1
-#train[train['Sex']=='female']=0
-Sex=pd.get_dummies(train['Sex'],drop_first=True)
-Embarked=pd.get_dummies(train['Embarked'],drop_first=True)
-Fare=train['Fare']
-NFare=(Fare-Fare.min())/(Fare.max()-Fare.min())
-Pclass=pd.get_dummies(train['Pclass'],drop_first=True)
-SibSp=train['SibSp']
-Parch=train['Parch']
-
-Male_Avg1 = np.mean(test[test['Sex'] == 0].Age)               # 0 is male 1 is female by factorize function
-Female_Avg1= np.mean(test[test['Sex'] == 1].Age) 
-
-# Now lets fill them 
-test['Age'] = test[['Sex','Age']].apply(lambda x : Fillme(x,Male_Avg1,Female_Avg1) , axis = 1) 
-Age=train['Age']
-Age.fillna(int(Age.mode()),inplace=True)
-NAge=(Age-Age.min())/(Age.max()-Age.min())
-
-X=pd.concat([Sex,Embarked,NFare,Pclass,SibSp,Parch,NAge],axis=1)
-y=train['Survived']
+dataset = pd.get_dummies(dataset, columns = ["Ticket"], prefix="T")
 
 
-# %%
-test=pd.read_csv('test.csv')
+#%% Survived
+y=dataset["Survived"]
 
-test['Embarked'].fillna(method='ffill',inplace=True)
-test.drop(['Name'],axis = 1,inplace = True)
-test.drop(['Ticket'],axis=1,inplace=True)
-test.drop(['Cabin'],axis=1,inplace=True)
-test['Sex']=pd.factorize(test['Sex'])[0]
-test['Embarked']=pd.factorize(test['Embarked'])[0]
-
-
-Sex1=pd.get_dummies(test['Sex'],drop_first=True)
-Embarked1=pd.get_dummies(test['Embarked'],drop_first=True)
-Fare1=test['Fare']
-Fare1.fillna(int(Fare1.mode()),inplace=True)
-NFare1=(Fare1-Fare1.min())/(Fare1.max()-Fare1.min())
-Pclass1=pd.get_dummies(test['Pclass'],drop_first=True)
-SibSp1=test['SibSp']
-Parch1=test['Parch']
-Age1=test['Age']
-Age1.fillna(int(Age.mode()),inplace=True)
-NAge1=(Age1-Age1.min())/(Age1.max()-Age1.min())
-
-
-X1=pd.concat([Sex1,Embarked1,NFare1,Pclass1,SibSp1,Parch1,NAge1],axis=1)
+#%% drop passengerid
+dataset.drop(labels = ["PassengerId"], axis = 1, inplace = True)
 
 
 
 
-#%%
-clf=LogisticRegression(random_state=0).fit(X,y)
-clf.score(X,y)
-#%%
-clf_tree=DecisionTreeClassifier(random_state=0).fit(X,y)
-clf_tree.score(X,y)
-#%%
-clf_svm=LinearSVC(random_state=0, tol=1e-5).fit(X,y)
-clf_svm.score(X,y)
-#%%
-clf_random=RandomForestClassifier(max_depth=10, random_state=0).fit(X,y)
-clf_random.score(X,y)
-#%%
-clf_ada = AdaBoostClassifier(random_state=0,n_estimators=100).fit(X,y)
-clf_ada.score(X,y)
 
 
+# Modeling
+
+#%% Separate train dataset and test dataset
+tr=dataset[:train_len]
+ts=dataset[train_len:]
+ts.drop(labels=["Survived"],axis = 1,inplace=True)
+
+#%% Separate train features and label
+tr["Survived"]=tr["Survived"].astype(int)
+Y_train=tr["Survived"]
+X_train=tr.drop(labels = ["Survived"],axis = 1)
 
 
 #%%
 def ModelAlg(k,r,X_train,Y_train):
     kfold = StratifiedKFold(n_splits=k)
-    random_state = r,
+    random_state = r
     classifiers = []
     classifiers.append(SVC(random_state=random_state))
     classifiers.append(DecisionTreeClassifier(random_state=random_state))
@@ -146,7 +200,7 @@ def ModelAlg(k,r,X_train,Y_train):
 
     cv_results = []
     for classifier in classifiers :
-        cv_results.append(cross_val_score(classifier, X_train, y = Y_train, scoring = "accuracy", cv = kfold, n_jobs=4))
+        cv_results.append(cross_val_score(classifier, X_train, y = Y_train, scoring = "accuracy", cv = kfold, n_jobs=1))
 
     cv_means = []
     cv_std = []
@@ -157,17 +211,93 @@ def ModelAlg(k,r,X_train,Y_train):
     cv_res = pd.DataFrame({"CrossValMeans":cv_means,"CrossValerrors": cv_std,"Algorithm":["SVC","DecisionTree","AdaBoost",
     "RandomForest","ExtraTrees","GradientBoosting","MultipleLayerPerceptron","KNeighboors","LogisticRegression","LinearDiscriminantAnalysis"]})
     
+    sns.set(style='white', context='notebook', palette='deep')
     g = sns.barplot("CrossValMeans","Algorithm",data = cv_res, palette="Set3",orient = "h",**{'xerr':cv_std})
     g.set_xlabel("Mean Accuracy")
     g = g.set_title("Cross validation scores")
     
     return cv_res
 
+cv_res=ModelAlg(10,2,X_train,Y_train)
 
 
 
-# %%
-y1=clf_tree.predict(X1)
+# Meta modeling with RandomForest, GradienBoosting, LR, LD
+#%%
+kfold = StratifiedKFold(n_splits=10)
+#%% RandomForest
+RFC = RandomForestClassifier()
+## Search grid for optimal parameters
+rf_param_grid = {"max_depth": [None],
+              "max_features": [1, 3, 10],
+              "min_samples_split": [2, 3, 10],
+              "min_samples_leaf": [1, 3, 10],
+              "bootstrap": [False],
+              "n_estimators" :[100,300],
+              "criterion": ["gini"]}
+gsRFC = GridSearchCV(RFC,param_grid = rf_param_grid, cv=kfold, scoring="accuracy", n_jobs= 4, verbose = 1)
+gsRFC.fit(X_train,Y_train)
+RFC_best = gsRFC.best_estimator_
+# Best score
+gsRFC.best_score_
+
+#%% Gradient boosting tunning
+GBC = GradientBoostingClassifier()
+gb_param_grid = {'loss' : ["deviance"],
+              'n_estimators' : [100,200,300],
+              'learning_rate': [0.1, 0.05, 0.01],
+              'max_depth': [4, 8],
+              'min_samples_leaf': [100,150],
+              'max_features': [0.3, 0.1] 
+              }
+gsGBC = GridSearchCV(GBC,param_grid = gb_param_grid, cv=kfold, scoring="accuracy", n_jobs= 4, verbose = 1)
+gsGBC.fit(X_train,Y_train)
+GBC_best = gsGBC.best_estimator_
+# Best score
+gsGBC.best_score_
+
+#%% Logit
+# Logistic
+LGC = LogisticRegression(C=1e5)
+gb_param_grid = {'penalty' : ["l1"],
+              'n_estimators' : [100,200,300],
+              'learning_rate': [0.1, 0.05, 0.01],
+              'max_depth': [4, 8],
+              'min_samples_leaf': [100,150],
+              'max_features': [0.3, 0.1] 
+              }
+gsLGC = GridSearchCV(LGC,param_grid = gb_param_grid, cv=kfold, scoring="accuracy", n_jobs= 4, verbose = 1)
+gsLGC.fit(X_train,Y_train)
+LGC_best = gsLGC.best_estimator_
+# Best score
+gsLGC.best_score_
+
+
+#%% Linear
+LDC = LinearDiscriminantAnalysis()
+gb_param_grid = {'pen' : ["deviance"],
+              'n_estimators' : [100,200,300],
+              'learning_rate': [0.1, 0.05, 0.01],
+              'max_depth': [4, 8],
+              'min_samples_leaf': [100,150],
+              'max_features': [0.3, 0.1] 
+              }
+gsLDC = GridSearchCV(LDC,param_grid = gb_param_grid, cv=kfold, scoring="accuracy", n_jobs= 4, verbose = 1)
+gsLDC.fit(X_train,Y_train)
+LDC_best = gsLDC.best_estimator_
+# Best score
+gsLDC.best_score_
+
+
+
+
+
+#%%  Voting Models
+votingC = VotingClassifier(estimators=[('rfc', RFC_best),('gbc',GBC_best)], voting='soft', n_jobs=4)
+votingC = votingC.fit(X_train, Y_train)
+
+# %% Predicting
+y1=votingC.predict(ts)
 gender=pd.read_csv('gender_submission.csv')
 gender['Survived']=y1
 gender.to_csv('submission.csv',index=None)
