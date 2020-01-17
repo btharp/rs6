@@ -75,8 +75,10 @@ g = sns.distplot(dataset["DistanceFromHome"])
 g=sns.scatterplot(x="DistanceFromHome",y="Attrition",data=train)
 # %%
 g = sns.distplot(np.log(dataset["DistanceFromHome"]))
-# %% DistanceFromHome get dummies
+# %% Log DistanceFromHome 
 dataset["DistanceFromHome"]=np.log(dataset["DistanceFromHome"])
+
+
 
 # Education
 # %% bar plot
@@ -202,23 +204,25 @@ dataset['WorkLifeBalance'] = dataset['WorkLifeBalance'].map(lambda s: 1 if s == 
 #%% YearsAtCompany distPlot
 g = sns.distplot(dataset["YearsAtCompany"])
 #%% log YearsAtCompany
-dataset["YearsAtCompany"][dataset["YearsAtCompany"]>dataset["YearsAtCompany"].quantile(0.95)]=dataset["YearsAtCompany"].quantile(0.95)
+# dataset["YearsAtCompany"][dataset["YearsAtCompany"]>dataset["YearsAtCompany"].quantile(0.95)]=dataset["YearsAtCompany"].quantile(0.95)
+dataset["YearsAtCompany"]=np.log1p(dataset["YearsAtCompany"])
 
 #%% YearsInCurrentRole distPlot
 g = sns.distplot(dataset["YearsInCurrentRole"])
-#%% YearsInCurrentRole 
-dataset["YearsInCurrentRole"][dataset["YearsInCurrentRole"]>dataset["YearsInCurrentRole"].quantile(0.95)]=dataset["YearsInCurrentRole"].quantile(0.95)
+#%% log YearsInCurrentRole 
+#dataset["YearsInCurrentRole"][dataset["YearsInCurrentRole"]>dataset["YearsInCurrentRole"].quantile(0.95)]=dataset["YearsInCurrentRole"].quantile(0.95)
+dataset["YearsInCurrentRole"]=np.log1p(dataset["YearsInCurrentRole"])
 
 #%% YearsSinceLastPromotion distPlot
 g = sns.distplot(dataset["YearsSinceLastPromotion"])
 #%% YearsSinceLastPromotion
-dataset["YearsSinceLastPromotion"][dataset["YearsSinceLastPromotion"]>dataset["YearsSinceLastPromotion"].quantile(0.93)]=dataset["YearsSinceLastPromotion"].quantile(0.93)
-
+# dataset["YearsSinceLastPromotion"][dataset["YearsSinceLastPromotion"]>dataset["YearsSinceLastPromotion"].quantile(0.93)]=dataset["YearsSinceLastPromotion"].quantile(0.93)
+dataset["YearsSinceLastPromotion"]=np.log1p(dataset["YearsSinceLastPromotion"])
 
 #%% YearsWithCurrManager distPlot
 g = sns.distplot(dataset["YearsWithCurrManager"])
-#%%
-# dataset["YearsWithCurrManager"]=np.log(dataset["YearsWithCurrManager"])
+#%% log YearsWithCurrManager
+dataset["YearsWithCurrManager"]=np.log1p(dataset["YearsWithCurrManager"])
 
 #%%
 # dataset[dataset==np.isinf]=0
@@ -378,15 +382,66 @@ MLPC_best = gsMLPC.best_estimator_
 gsMLPC.best_score_
 
 
+#%%
+def plot_learning_curve(estimator, title, X, y, ylim=None, cv=None,
+                        n_jobs=-1, train_sizes=np.linspace(.1, 1.0, 5)):
+    """Generate a simple plot of the test and training learning curve"""
+    plt.figure()
+    plt.title(title)
+    if ylim is not None:
+        plt.ylim(*ylim)
+    plt.xlabel("Training examples")
+    plt.ylabel("Score")
+    train_sizes, train_scores, test_scores = learning_curve(
+        estimator, X, y, cv=cv, n_jobs=n_jobs, train_sizes=train_sizes)
+    train_scores_mean = np.mean(train_scores, axis=1)
+    train_scores_std = np.std(train_scores, axis=1)
+    test_scores_mean = np.mean(test_scores, axis=1)
+    test_scores_std = np.std(test_scores, axis=1)
+    plt.grid()
+
+    plt.fill_between(train_sizes, train_scores_mean - train_scores_std,
+                     train_scores_mean + train_scores_std, alpha=0.1,
+                     color="r")
+    plt.fill_between(train_sizes, test_scores_mean - test_scores_std,
+                     test_scores_mean + test_scores_std, alpha=0.1, color="g")
+    plt.plot(train_sizes, train_scores_mean, 'o-', color="r",
+             label="Training score")
+    plt.plot(train_sizes, test_scores_mean, 'o-', color="g",
+             label="Cross-validation score")
+
+    plt.legend(loc="best")
+    return plt
+
+
+#%%
+g = plot_learning_curve(gsRFC.best_estimator_,"RF mearning curves",X_train,Y_train,cv=kfold)
+#%%
+g = plot_learning_curve(gsETC.best_estimator_,"ExtraTrees mearning curves",X_train,Y_train,cv=kfold)
+#%%
+g = plot_learning_curve(gsGBC.best_estimator_,"GB mearning curves",X_train,Y_train,cv=kfold)
+#%%
+g = plot_learning_curve(gsLRC.best_estimator_,"LR mearning curves",X_train,Y_train,cv=kfold)
+#%%
+g = plot_learning_curve(gsLDC.best_estimator_,"LD mearning curves",X_train,Y_train,cv=kfold)
+#%%
+g = plot_learning_curve(gsMLPC.best_estimator_,"MLP mearning curves",X_train,Y_train,cv=kfold)
+
+
+
+
+
 
 #%%  Voting Models
-votingC = VotingClassifier(estimators=[('rfc', RFC_best),('gbc',GBC_best),('MLPC',MLPC_best),('ld',LDC_best),('lr',LRC_best)], voting='soft', n_jobs=4)
+votingC = VotingClassifier(estimators=[('MLPC',MLPC_best),('ld',LDC_best),('lr',LRC_best)], voting='soft', n_jobs=4)
 votingC = votingC.fit(X_train, Y_train)
+votingC.score(X_train,Y_train)
 
 # %% Predicting
 y1=votingC.predict_proba(ts)
-gender=pd.read_csv('submission.csv')
-gender['Attrition']=pd.DataFrame(y1)[1]
-gender.to_csv('submission.csv',index=None)
+result = pd.DataFrame()
+result['user_id'] = test['user_id']
+result['Attrition'] = pd.DataFrame(y1)[1]
+result.to_csv('submission.csv',index=None)
 
 # %%
