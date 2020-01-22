@@ -17,8 +17,13 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.svm import SVC
+from xgboost import XGBClassifier
 from sklearn.model_selection import GridSearchCV, cross_val_score, StratifiedKFold, learning_curve
 sns.set(style='white', context='notebook', palette='deep')
+from tpot import TPOTClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.calibration import CalibratedClassifierCV
+
 
 # %% Load data
 train=pd.read_csv('train.csv')
@@ -184,7 +189,7 @@ dataset = pd.get_dummies(dataset, columns = ["StockOptionLevel"], prefix="SOL",d
 #%% TotalWorkingYears distPlot
 g = sns.distplot(dataset["TotalWorkingYears"])
 #%% log TotalWorkingYears
-# dataset["LogTotalWorkingYears"]=np.log(dataset["TotalWorkingYears"])
+dataset["LogTotalWorkingYears"]=np.log1p(dataset["TotalWorkingYears"])
 
 # TrainingTimesLastYear
 #%% TrainingTimesLastYear barplot
@@ -246,11 +251,35 @@ ts.drop(labels=["Attrition"],axis = 1,inplace=True)
 tr["Attrition"]=tr["Attrition"].astype(int)
 Y_train=tr["Attrition"]
 X_train=tr.drop(labels = ["Attrition"],axis = 1)
+
+
+
+#%% Modelig with TPOT
+x_train, x_test, y_train, y_test = train_test_split(X_train,Y_train, train_size=0.75, test_size=0.25)
+
+tpot = TPOTClassifier(generations=5, population_size=20, verbosity=2)
+tpot.fit(x_train, y_train)
+print(tpot.score(x_test, y_test))
+tpot.export('tpot_attrition_pipeline.py')
+
+
+#%% predicting with linearSVC, the best model from tpot
+# with a final score of about 0.84813 in public board 
+svm = LinearSVC(C=10.0, dual=False, loss="squared_hinge", penalty="l1", tol=0.1)
+clf = CalibratedClassifierCV(svm) 
+clf.fit(X_train, Y_train)
+clf.score(X_train,Y_train) # 0.8937074829931972
+y_proba = clf.predict_proba(ts)
+
+
+
+
+
+# Modeling with Muti Classifiers
+# with a best score of about 0.84093 in public board and 0.87755 in private board
+#%% normalize
 X_train=(X_train-X_train.min())/(X_train.max()-X_train.min())
 ts=(ts-ts.min())/(ts.max()-ts.min())
-
-
-
 
 #%% Simple modeling
 def ModelAlg(k,r,X_train,Y_train):
@@ -267,6 +296,9 @@ def ModelAlg(k,r,X_train,Y_train):
     classifiers.append(KNeighborsClassifier())
     classifiers.append(LogisticRegression(random_state = random_state))
     classifiers.append(LinearDiscriminantAnalysis())
+    classifiers.append(XGBClassifier())
+    
+    
 
     cv_results = []
     for classifier in classifiers :
@@ -279,7 +311,7 @@ def ModelAlg(k,r,X_train,Y_train):
         cv_std.append(cv_result.std())
 
     cv_res = pd.DataFrame({"CrossValMeans":cv_means,"CrossValerrors": cv_std,"Algorithm":["SVC","DecisionTree","AdaBoost",
-    "RandomForest","ExtraTrees","GradientBoosting","MultipleLayerPerceptron","KNeighboors","LogisticRegression","LinearDiscriminantAnalysis"]})
+    "RandomForest","ExtraTrees","GradientBoosting","MultipleLayerPerceptron","KNeighboors","LogisticRegression","LinearDiscriminantAnalysis","XGB"]})
     
     sns.set(style='white', context='notebook', palette='deep')
     g = sns.barplot("CrossValMeans","Algorithm",data = cv_res, palette="Set3",orient = "h",**{'xerr':cv_std})
@@ -288,7 +320,7 @@ def ModelAlg(k,r,X_train,Y_train):
     
     return cv_res
 
-cv_res=ModelAlg(10,2,X_train,Y_train)
+cv_res=ModelAlg(10,10,X_train,Y_train)
 
 cv_res
 
@@ -382,6 +414,22 @@ MLPC_best = gsMLPC.best_estimator_
 gsMLPC.best_score_
 
 
+#%% XGboosting tunning
+XGBC = XGBClassifier()
+xgb_param_grid = {'loss' : ["deviance"],
+              'n_estimators' : [100,200,300],
+              'learning_rate': [0.1, 0.05, 0.01],
+              'max_depth': [4, 8],
+              'min_samples_leaf': [100,150],
+              'max_features': [0.3, 0.1] 
+              }
+gsXGBC = GridSearchCV(XGBC,param_grid = xgb_param_grid, cv=kfold, scoring="accuracy", n_jobs= 4, verbose = 1)
+gsXGBC.fit(X_train,Y_train)
+XGBC_best = gsXGBC.best_estimator_
+# Best score
+gsXGBC.best_score_
+
+
 #%%
 def plot_learning_curve(estimator, title, X, y, ylim=None, cv=None,
                         n_jobs=-1, train_sizes=np.linspace(.1, 1.0, 5)):
@@ -427,21 +475,24 @@ g = plot_learning_curve(gsLDC.best_estimator_,"LD mearning curves",X_train,Y_tra
 #%%
 g = plot_learning_curve(gsMLPC.best_estimator_,"MLP mearning curves",X_train,Y_train,cv=kfold)
 
+#%%
+g = plot_learning_curve(gsXGBC.best_estimator_,"XBG mearning curves",X_train,Y_train,cv=kfold)
+
 
 
 
 
 
 #%%  Voting Models
-votingC = VotingClassifier(estimators=[('MLPC',MLPC_best),('ld',LDC_best),('lr',LRC_best)], voting='soft', n_jobs=4)
+votingC = VotingClassifier(estimators=[('XGBC',XGBC_best),('MLPC',MLPC_best),('ld',LDC_best),('lr',LRC_best)], voting='soft', n_jobs=4)
 votingC = votingC.fit(X_train, Y_train)
 votingC.score(X_train,Y_train)
 
 # %% Predicting
-y1=votingC.predict_proba(ts)
+y_proba=votingC.predict_proba(ts)
 result = pd.DataFrame()
 result['user_id'] = test['user_id']
-result['Attrition'] = pd.DataFrame(y1)[1]
+result['Attrition'] = pd.DataFrame(y_proba)[1]
 result.to_csv('submission.csv',index=None)
 
 # %%
